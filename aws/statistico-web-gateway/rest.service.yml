@@ -7,11 +7,14 @@ Parameters:
     Description: The name of the environment to add this service to
   ServiceName:
     Type: String
-    Default: statistico-data-rest
+    Default: statistico-web-gateway-rest
     Description: A name for the service
+  ContainerName:
+    Type: String
+    Default: rest
   ImageUrl:
     Type: String
-    Default: 216629550457.dkr.ecr.eu-west-2.amazonaws.com/statistico-data:64e085ee27b882a2d88e4189ce03ad1209b12c13
+    Default: 216629550457.dkr.ecr.eu-west-2.amazonaws.com/statistico-web-gateway:c8296ded31a124e03df10a21725b6508dee1971a
     Description: The url of a docker image that contains the application process that
       will handle the traffic for this service
   ContainerMemory:
@@ -28,7 +31,7 @@ Parameters:
     Description: How many copies of the service task to run
   Host:
     Type: String
-    Default: data.statistico.io
+    Default: api.statistico.io
   Priority:
     Type: Number
     Default: 1
@@ -55,24 +58,11 @@ Resources:
         # The actual service container. It should only accept inbound traffic
         # from Consul Connect, and if it needs to talk to another service it does
         # so via a localhost proxy pipe opened by the Consul Connect sidecar
-        - Name: !Ref 'ServiceName'
+        - Name: !Ref 'ContainerName'
           Image: !Ref 'ImageUrl'
           Memory: !Ref 'ContainerMemory'
           PortMappings:
             - ContainerPort: !Ref 'ContainerPort'
-          Secrets:
-            - Name: DB_DRIVER
-              ValueFrom: arn:aws:ssm:eu-west-2:216629550457:parameter/statistico-data-DB_DRIVER
-            - Name: DB_HOST
-              ValueFrom: arn:aws:ssm:eu-west-2:216629550457:parameter/statistico-data-DB_HOST
-            - Name: DB_NAME
-              ValueFrom: arn:aws:ssm:eu-west-2:216629550457:parameter/statistico-data-DB_NAME
-            - Name: DB_PASSWORD
-              ValueFrom: arn:aws:ssm:eu-west-2:216629550457:parameter/statistico-data-DB_PASSWORD
-            - Name: DB_PORT
-              ValueFrom: arn:aws:ssm:eu-west-2:216629550457:parameter/statistico-data-DB_PORT
-            - Name: DB_USER
-              ValueFrom: arn:aws:ssm:eu-west-2:216629550457:parameter/statistico-data-DB_USER
           Command:
             - "./rest"
           Essential: true
@@ -100,8 +90,8 @@ Resources:
       DesiredCount: !Ref 'DesiredCount'
       TaskDefinition: !Ref 'TaskDefinition'
       LoadBalancers:
-        - TargetGroupArn: !Ref 'DataServiceRestTargetGroup'
-          ContainerName: !Ref 'ServiceName'
+        - TargetGroupArn: !Ref 'WebGatewayServiceRestTargetGroup'
+          ContainerName: !Ref 'ContainerName'
           ContainerPort: !Ref 'ContainerPort'
 
   # A target group. This is used for keeping track of all the tasks, and
@@ -109,11 +99,11 @@ Resources:
   # to use the addresses yourself, but most often this target group is just
   # connected to an application load balancer, or network load balancer, so
   # it can automatically distribute traffic across all the targets.
-  DataServiceRestTargetGroup:
+  WebGatewayServiceRestTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
       HealthCheckIntervalSeconds: 6
-      HealthCheckPath: /
+      HealthCheckPath: /health-check
       HealthCheckProtocol: HTTP
       HealthCheckTimeoutSeconds: 5
       HealthyThresholdCount: 2
@@ -128,10 +118,10 @@ Resources:
   LoadBalancerRule:
     Type: AWS::ElasticLoadBalancingV2::ListenerRule
     DependsOn:
-      - DataServiceRestTargetGroup
+      - WebGatewayServiceRestTargetGroup
     Properties:
       Actions:
-        - TargetGroupArn: !Ref 'DataServiceRestTargetGroup'
+        - TargetGroupArn: !Ref 'WebGatewayServiceRestTargetGroup'
           Type: 'forward'
       Conditions:
         - Field: host-header
