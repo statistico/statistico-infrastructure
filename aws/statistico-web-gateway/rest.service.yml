@@ -65,7 +65,7 @@ Resources:
             - ContainerPort: !Ref 'ContainerPort'
           Environment:
             - Name: STATISTICO_DATA_SERVICE_HOST
-              Value: https://api.statistico.io
+              Value: statistico-data-grpc.statistico.internal
             - Name: STATISTICO_DATA_SERVICE_PORT
               Value: 50051
           Command:
