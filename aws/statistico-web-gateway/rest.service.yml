@@ -14,7 +14,7 @@ Parameters:
     Default: rest
   ImageUrl:
     Type: String
-    Default: 216629550457.dkr.ecr.eu-west-2.amazonaws.com/statistico-web-gateway:c8296ded31a124e03df10a21725b6508dee1971a
+    Default: 216629550457.dkr.ecr.eu-west-2.amazonaws.com/statistico-web-gateway:80409142fd1a2238ba4e714558be15fef3830fdc
     Description: The url of a docker image that contains the application process that
       will handle the traffic for this service
   ContainerMemory:
@@ -63,6 +63,11 @@ Resources:
           Memory: !Ref 'ContainerMemory'
           PortMappings:
             - ContainerPort: !Ref 'ContainerPort'
+          Environment:
+            - Name: STATISTICO_DATA_SERVICE_HOST
+              Value: statistico-data-grpc.statistico.internal
+            - Name: STATISTICO_DATA_SERVICE_PORT
+              Value: 50051
           Command:
             - "./rest"
           Essential: true
