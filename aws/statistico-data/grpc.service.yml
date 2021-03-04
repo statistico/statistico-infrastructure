@@ -11,21 +11,33 @@ Parameters:
     Description: A name for the service
   ImageUrl:
     Type: String
-    Default: 216629550457.dkr.ecr.eu-west-2.amazonaws.com/statistico-data:64e085ee27b882a2d88e4189ce03ad1209b12c13
+    Default: 216629550457.dkr.ecr.eu-west-2.amazonaws.com/statistico-data:ecfc4dac26b90438fc2c8f3884b38e1b2c2e0d68
     Description: The url of a docker image that contains the application process that
       will handle the traffic for this service
   ContainerPort:
     Type: Number
     Default: 50051
     Description: What port number the application inside the docker container is binding to
+  ContainerCpu:
+    Type: Number
+    Default: 256
+    Description: How much CPU to give the container. 1024 is 1 CPU
   ContainerMemory:
     Type: Number
-    Default: 128
+    Default: 512
     Description: How much memory in megabytes to give the container
-  DesiredCount:
+  MinContainers:
     Type: Number
     Default: 1
-    Description: How many copies of the service task to run
+    Description: Minimum number of copies of the service task to run
+  MaxContainers:
+    Type: Number
+    Default: 3
+    Description: Maximum number ofcopies of the service task to run
+  AutoScalingTargetValue:
+    Type: Number
+    Default: 50
+    Description: "Target CPU utilization (%) for ECS services auto scaling"
   Domain:
     Type: String
     Default: statistico.internal
@@ -38,21 +50,37 @@ Resources:
     Properties:
       LogGroupName: !Sub ${EnvironmentName}-service-${ServiceName}
 
+  AutoScalingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceAutoscaleRole'
+
   # The task definition. This is a simple metadata description of what
   # container to run, and what resource requirements it has.
   TaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
       Family: !Ref 'ServiceName'
+      Cpu: !Ref 'ContainerCpu'
       Memory: !Ref 'ContainerMemory'
-      NetworkMode: 'awsvpc'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
       ExecutionRoleArn: arn:aws:iam::216629550457:role/ecsTaskExecutionRole
       ContainerDefinitions:
         - Name: 'grpc'
-          Memory: !Ref 'ContainerMemory'
           Image: !Ref 'ImageUrl'
+          Essential: true
           PortMappings:
             - ContainerPort: !Ref 'ContainerPort'
+              Protocol: tcp
           Secrets:
             - Name: DB_DRIVER
               ValueFrom: arn:aws:ssm:eu-west-2:216629550457:parameter/statistico-data-DB_DRIVER
@@ -66,6 +94,8 @@ Resources:
               ValueFrom: arn:aws:ssm:eu-west-2:216629550457:parameter/statistico-data-DB_PORT
             - Name: DB_USER
               ValueFrom: arn:aws:ssm:eu-west-2:216629550457:parameter/statistico-data-DB_USER
+            - Name: SENTRY_DSN
+              ValueFrom: arn:aws:ssm:eu-west-2:216629550457:parameter/statistico-data-SENTRY_DSN
           Command:
             - "./grpc"
             - "--port 50051"
@@ -75,31 +105,6 @@ Resources:
               awslogs-group: !Sub ${EnvironmentName}-service-${ServiceName}
               awslogs-region: !Ref 'AWS::Region'
               awslogs-stream-prefix: !Ref 'ServiceName'
-
-  # The service. The service is a resource which allows you to run multiple
-  # copies of a type of task, and gather up their logs and metrics, as well
-  # as monitor the number of running tasks and replace any that have crashed
-  Service:
-    Type: AWS::ECS::Service
-    DependsOn: ServiceDiscoveryService
-    Properties:
-      ServiceName: !Ref 'ServiceName'
-      Cluster:
-        Fn::ImportValue: !Sub ${EnvironmentName}:ClusterName
-      DeploymentConfiguration:
-        MaximumPercent: 200
-        MinimumHealthyPercent: 75
-      NetworkConfiguration:
-        AwsvpcConfiguration:
-          SecurityGroups:
-            - Fn::ImportValue: !Sub ${EnvironmentName}:ContainerSecurityGroup
-          Subnets:
-            - Fn::ImportValue: !Sub ${EnvironmentName}:PrivateSubnetOne
-            - Fn::ImportValue: !Sub ${EnvironmentName}:PrivateSubnetTwo
-      DesiredCount: !Ref 'DesiredCount'
-      TaskDefinition: !Ref 'TaskDefinition'
-      ServiceRegistries:
-        - RegistryArn: !GetAtt ServiceDiscoveryService.Arn
 
   # Create a service discovery service in the private service namespace.
   ServiceDiscoveryService:
@@ -112,6 +117,40 @@ Resources:
         NamespaceId: !Ref 'ServiceDiscoveryNamespace'
       HealthCheckCustomConfig:
         FailureThreshold: 1
+
+  ServiceDiscoveryNamespace:
+    Type: AWS::ServiceDiscovery::PrivateDnsNamespace
+    Properties:
+      Name: !Ref Domain
+      Vpc:
+        Fn::ImportValue: !Sub ${EnvironmentName}:VpcId
+
+  # The service. The service is a resource which allows you to run multiple
+  # copies of a type of task, and gather up their logs and metrics, as well
+  # as monitor the number of running tasks and replace any that have crashed
+  Service:
+    Type: AWS::ECS::Service
+    DependsOn: ServiceDiscoveryService
+    Properties:
+      ServiceName: !Ref 'ServiceName'
+      Cluster:
+        Fn::ImportValue: !Sub ${EnvironmentName}:ClusterName
+      LaunchType: FARGATE
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 75
+      DesiredCount: !Ref 'MinContainers'
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups:
+            - Fn::ImportValue: !Sub ${EnvironmentName}:ContainerSecurityGroup
+          Subnets:
+            - Fn::ImportValue: !Sub ${EnvironmentName}:PrivateSubnetOne
+            - Fn::ImportValue: !Sub ${EnvironmentName}:PrivateSubnetTwo
+      TaskDefinition: !Ref 'TaskDefinition'
+      ServiceRegistries:
+        - RegistryArn: !GetAtt ServiceDiscoveryService.Arn
 
   # Rule which allows the containers to talk to other containers in the same group.
   # This is what allows a container to use service discovery to get the IP and talk
@@ -126,9 +165,19 @@ Resources:
       SourceSecurityGroupId:
         Fn::ImportValue: !Sub ${EnvironmentName}:ContainerSecurityGroup
 
-  ServiceDiscoveryNamespace:
-    Type: AWS::ServiceDiscovery::PrivateDnsNamespace
+  AutoScalingTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
     Properties:
-      Name: !Ref Domain
-      Vpc:
-        Fn::ImportValue: !Sub ${EnvironmentName}:VpcId
+      MinCapacity: !Ref MinContainers
+      MaxCapacity: !Ref MaxContainers
+      ResourceId: !Join [ '/', [ service, 'statistico-production', !GetAtt Service.Name ] ]
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+      RoleARN: !GetAtt AutoScalingRole.Arn
+
+Outputs:
+  ServiceDiscoveryNamespace:
+    Description: Name of the global service discovery namespace
+    Value: !Ref 'ServiceDiscoveryNamespace'
+    Export:
+      Name: !Sub ${EnvironmentName}:ServiceDiscoveryNamespace

@@ -1,34 +1,11 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: EC2 ECS cluster running containers in a private subnet. Supports
+Description: ECS cluster running containers in a private subnet. Supports
   public facing load balancers, private internal load balancers, and
   both internal and external service discovery namespaces.
 Parameters:
   EnvironmentName:
     Type: String
     Default: statistico-production
-    Description: "A friendly environment name that will be used for name spacing all cluster resources. Example: staging, qa, or production"
-  DesiredCapacity:
-    Type: Number
-    Default: '1'
-    Description: Number of EC2 instances to launch in your ECS cluster.
-  MaxSize:
-    Type: Number
-    Default: '3'
-    Description: Maximum number of EC2 instances that can be launched in your ECS cluster.
-  ECSAMI:
-    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
-    Default: /aws/service/ecs/optimized-ami/amazon-linux-2/recommended/image_id
-    Description: The Amazon Machine Image ID used for the cluster, leave it as the default value to get the latest AMI
-  InstanceType:
-    Description: EC2 instance type
-    Type: String
-    Default: t2.micro
-    AllowedValues: [ t2.micro, t2.small, t2.medium ]
-    ConstraintDescription: Please choose a valid instance type.
-#  KeyName:
-#    Type: AWS::EC2::KeyPair::KeyName
-#    Default: statistico
-#    Description: The name of an SSH key that will be used to access the underlying hosts in the cluster. If none appear here you need to create and download an SSH key
 
 Mappings:
   # Hard values for the subnet masks. These masks define
@@ -202,44 +179,6 @@ Resources:
       GroupDescription: Access to the ECS hosts that run containers
       VpcId: !Ref 'VPC'
 
-  # Autoscaling group. This launches the actual EC2 instances that will register
-  # themselves as members of the cluster, and run the docker containers.
-  ECSAutoScalingGroup:
-    Type: AWS::AutoScaling::AutoScalingGroup
-    Properties:
-      VPCZoneIdentifier:
-        - !Ref PrivateSubnetOne
-        - !Ref PrivateSubnetTwo
-      LaunchConfigurationName: !Ref 'ContainerInstances'
-      MinSize: '1'
-      MaxSize: !Ref 'MaxSize'
-      DesiredCapacity: !Ref 'DesiredCapacity'
-    CreationPolicy:
-      ResourceSignal:
-        Timeout: PT15M
-    UpdatePolicy:
-      AutoScalingReplacingUpdate:
-        WillReplace: 'true'
-  ContainerInstances:
-    Type: AWS::AutoScaling::LaunchConfiguration
-    Properties:
-      ImageId: !Ref 'ECSAMI'
-      SecurityGroups: [!Ref 'ContainerSecurityGroup']
-      InstanceType: !Ref 'InstanceType'
-      IamInstanceProfile: !Ref 'EC2InstanceProfile'
-      KeyName: 'statistico'
-      UserData:
-        Fn::Base64: !Sub |
-          #!/bin/bash -xe
-          echo ECS_CLUSTER=${ECSCluster} >> /etc/ecs/ecs.config
-          yum install -y aws-cfn-bootstrap
-          /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource ECSAutoScalingGroup --region ${AWS::Region}
-  EC2InstanceProfile:
-    Type: AWS::IAM::InstanceProfile
-    Properties:
-      Path: /
-      Roles: [!Ref 'EC2Role']
-
   # A role used to allow AWS Autoscaling to inspect stats and adjust scalable targets
   # on your AWS account
   AutoscalingRole:
@@ -263,39 +202,6 @@ Resources:
                   - 'cloudwatch:PutMetricAlarm'
                   - 'ecs:DescribeServices'
                   - 'ecs:UpdateService'
-                Resource: '*'
-
-  # Role for the EC2 hosts. This allows the ECS agent on the EC2 hosts
-  # to communicate with the ECS control plane, as well as download the docker
-  # images from ECR to run on your host.
-  EC2Role:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: [ec2.amazonaws.com]
-            Action: ['sts:AssumeRole']
-      Path: /
-      Policies:
-        - PolicyName: ecs-service
-          PolicyDocument:
-            Statement:
-              - Effect: Allow
-                Action:
-                  - 'ecs:CreateCluster'
-                  - 'ecs:DeregisterContainerInstance'
-                  - 'ecs:DiscoverPollEndpoint'
-                  - 'ecs:Poll'
-                  - 'ecs:RegisterContainerInstance'
-                  - 'ecs:StartTelemetrySession'
-                  - 'ecs:Submit*'
-                  - 'logs:CreateLogStream'
-                  - 'logs:PutLogEvents'
-                  - 'ecr:GetAuthorizationToken'
-                  - 'ecr:BatchGetImage'
-                  - 'ecr:GetDownloadUrlForLayer'
                 Resource: '*'
 
   # This is an IAM role which authorizes ECS to manage resources on your
@@ -337,6 +243,34 @@ Resources:
                   - 'elasticloadbalancing:RegisterTargets'
                 Resource: '*'
 
+  # This is a role which is used by the ECS tasks themselves.
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: [ ecs-tasks.amazonaws.com ]
+            Action: [ 'sts:AssumeRole' ]
+      Path: /
+      Policies:
+        - PolicyName: AmazonECSTaskExecutionRolePolicy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  # Allow the ECS Tasks to download images from ECR
+                  - 'ecr:GetAuthorizationToken'
+                  - 'ecr:BatchCheckLayerAvailability'
+                  - 'ecr:GetDownloadUrlForLayer'
+                  - 'ecr:BatchGetImage'
+
+                  # Allow the ECS tasks to upload logs to CloudWatch
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: '*'
+
 # These are the values output by the CloudFormation template. Be careful
 # about changing any of them, because of they are exported with specific
 # names so that the other task related CF templates can use them.
@@ -356,6 +290,11 @@ Outputs:
     Value: !GetAtt 'ECSRole.Arn'
     Export:
       Name: !Sub ${EnvironmentName}:ECSRole
+  ECSTaskExecutionRole:
+    Description: The ARN of the ECS role
+    Value: !GetAtt 'ECSTaskExecutionRole.Arn'
+    Export:
+      Name: !Sub ${EnvironmentName}:ECSTaskExecutionRole
   VpcId:
     Description: The ID of the VPC that this stack is deployed in
     Value: !Ref 'VPC'
