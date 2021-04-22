@@ -7,11 +7,11 @@ Parameters:
     Description: The name of the environment to add this service to
   ServiceName:
     Type: String
-    Default: statistico-strategy-grpc
+    Default: statistico-trader-grpc
     Description: A name for the service
   ImageUrl:
     Type: String
-    Default: 216629550457.dkr.ecr.eu-west-2.amazonaws.com/statistico-strategy:f8f3331f6795657344bbebf12a0932e2189c9e79
+    Default: 216629550457.dkr.ecr.eu-west-2.amazonaws.com/statistico-trader:512d7f58eb1467584df24febf7746239eaf02c01
     Description: The url of a docker image that contains the application process that
       will handle the traffic for this service
   ContainerPort:
@@ -82,8 +82,20 @@ Resources:
             - ContainerPort: !Ref 'ContainerPort'
               Protocol: tcp
           Secrets:
+            - Name: DB_DRIVER
+              ValueFrom: arn:aws:ssm:eu-west-2:216629550457:parameter/statistico-trader-DB_DRIVER
+            - Name: DB_HOST
+              ValueFrom: arn:aws:ssm:eu-west-2:216629550457:parameter/statistico-trader-DB_HOST
+            - Name: DB_NAME
+              ValueFrom: arn:aws:ssm:eu-west-2:216629550457:parameter/statistico-trader-DB_NAME
+            - Name: DB_PASSWORD
+              ValueFrom: arn:aws:ssm:eu-west-2:216629550457:parameter/statistico-trader-DB_PASSWORD
+            - Name: DB_PORT
+              ValueFrom: arn:aws:ssm:eu-west-2:216629550457:parameter/statistico-trader-DB_PORT
+            - Name: DB_USER
+              ValueFrom: arn:aws:ssm:eu-west-2:216629550457:parameter/statistico-trader-DB_USER
             - Name: SENTRY_DSN
-              ValueFrom: arn:aws:ssm:eu-west-2:216629550457:parameter/statistico-strategy-SENTRY_DSN
+              ValueFrom: arn:aws:ssm:eu-west-2:216629550457:parameter/statistico-trader-SENTRY_DSN
           Environment:
             - Name: STATISTICO_DATA_SERVICE_HOST
               Value: statistico-data-grpc.statistico.internal
@@ -138,8 +150,8 @@ Resources:
           SecurityGroups:
             - Fn::ImportValue: !Sub ${EnvironmentName}:ContainerSecurityGroup
           Subnets:
-            - Fn::ImportValue: !Sub ${EnvironmentName}:PrivateSubnetOne
-            - Fn::ImportValue: !Sub ${EnvironmentName}:PrivateSubnetTwo
+            - Fn::ImportValue: !Sub ${EnvironmentName}:PublicSubnetOne
+            - Fn::ImportValue: !Sub ${EnvironmentName}:PublicSubnetTwo
       TaskDefinition: !Ref 'TaskDefinition'
       ServiceRegistries:
         - RegistryArn: !GetAtt ServiceDiscoveryService.Arn
