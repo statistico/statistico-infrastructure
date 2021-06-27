@@ -5,6 +5,9 @@ Parameters:
     Type: String
     Default: statistico-production
     Description: The name of the environment to add this load balancer to
+  LoadBalancerName:
+    Type: String
+    Default: statistico-services-production
   SslCertificate:
     Type: String
     Default: arn:aws:acm:eu-west-2:216629550457:certificate/0164e3aa-b477-4ccc-a253-538de318d86e
@@ -33,19 +36,16 @@ Resources:
         # Allow access to ALB from anywhere on the internet
         - CidrIp: 0.0.0.0/0
           IpProtocol: 'tcp'
-          FromPort: 80
-          ToPort: 80
-        - CidrIp: 0.0.0.0/0
-          IpProtocol: 'tcp'
           FromPort: 443
           ToPort: 443
   PublicLoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
+      Name: !Ref 'LoadBalancerName'
       Scheme: internet-facing
       LoadBalancerAttributes:
         - Key: idle_timeout.timeout_seconds
-          Value: '30'
+          Value: '300'
       Subnets:
         # The load balancer is placed into the public subnets, so that traffic
         # from the internet can reach the load balancer directly via the internet gateway
@@ -53,20 +53,6 @@ Resources:
         - Fn::ImportValue: !Sub ${EnvironmentName}:PublicSubnetTwo
       SecurityGroups: [!Ref 'PublicLoadBalancerSG']
 
-  PublicHttpLoadBalancerListener:
-    Type: AWS::ElasticLoadBalancingV2::Listener
-    DependsOn:
-      - PublicLoadBalancer
-    Properties:
-      DefaultActions:
-        - Type: redirect
-          RedirectConfig:
-            Port: 443
-            Protocol: "HTTPS"
-            StatusCode: HTTP_301
-      LoadBalancerArn: !Ref 'PublicLoadBalancer'
-      Port: 80
-      Protocol: HTTP
   PublicHttpsLoadBalancerListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
     DependsOn:
@@ -81,20 +67,58 @@ Resources:
             MessageBody: '{"message": "Sorry this route is not supported by Statistico"}'
             StatusCode: '200'
       LoadBalancerArn: !Ref 'PublicLoadBalancer'
-      Port: 443
-      Protocol: HTTPS
+      Port: '443'
+      Protocol: 'HTTPS'
+
+  TradeServiceListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    DependsOn:
+      - TraderTargetGroup
+      - PublicHttpsLoadBalancerListener
+    Properties:
+      Actions:
+        - TargetGroupArn: !Ref TraderTargetGroup
+          Type: 'forward'
+      Conditions:
+        - Field: 'path-pattern'
+          PathPatternConfig:
+            Values:
+              - '/statistico.StrategyService*'
+      ListenerArn: !Ref PublicHttpsLoadBalancerListener
+      Priority: 1
+
+  TraderTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      TargetType: 'ip'
+      Name: 'statistico-trader-grpc'
+      Port: '8080'
+      Protocol: 'HTTP'
+      ProtocolVersion: 'HTTP1'
+      VpcId:
+        Fn::ImportValue: !Sub ${EnvironmentName}:VpcId
+      HealthCheckEnabled: 'true'
+      HealthCheckIntervalSeconds: 30
+      HealthCheckPath: '/health-check'
+      HealthCheckPort: '8080'
+      HealthCheckProtocol: 'HTTP'
+      HealthCheckTimeoutSeconds: '5'
+      HealthyThresholdCount: '5'
+      UnhealthyThresholdCount: '2'
+      Matcher:
+        HttpCode: '200'
 
 Outputs:
-  PublicHttpListener:
-    Description: The ARN of the public load balancer's Listener
-    Value: !Ref PublicHttpLoadBalancerListener
-    Export:
-      Name: !Sub ${EnvironmentName}:PublicHttpListener
   PublicHttpsListener:
     Description: The ARN of the public load balancer's Listener
     Value: !Ref PublicHttpsLoadBalancerListener
     Export:
       Name: !Sub ${EnvironmentName}:PublicHttpsListener
+  TraderTargetGroup:
+    Description: The ARN of the trader target group
+    Value: !Ref TraderTargetGroup
+    Export:
+      Name: !Sub ${EnvironmentName}:TraderTargetGroup
   ExternalUrl:
     Description: The url of the external load balancer
     Value: !Sub http://${PublicLoadBalancer.DNSName}

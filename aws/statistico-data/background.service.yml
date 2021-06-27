@@ -67,6 +67,32 @@ Resources:
         - FARGATE
       ExecutionRoleArn: arn:aws:iam::216629550457:role/ecsTaskExecutionRole
       ContainerDefinitions:
+        - Name: 'migrate'
+          Image: !Ref 'ImageUrl'
+          Essential: false
+          Secrets:
+            - Name: DB_DRIVER
+              ValueFrom: arn:aws:ssm:eu-west-2:216629550457:parameter/statistico-data-DB_DRIVER
+            - Name: DB_HOST
+              ValueFrom: arn:aws:ssm:eu-west-2:216629550457:parameter/statistico-data-DB_HOST
+            - Name: DB_NAME
+              ValueFrom: arn:aws:ssm:eu-west-2:216629550457:parameter/statistico-data-DB_NAME
+            - Name: DB_PASSWORD
+              ValueFrom: arn:aws:ssm:eu-west-2:216629550457:parameter/statistico-data-DB_PASSWORD
+            - Name: DB_PORT
+              ValueFrom: arn:aws:ssm:eu-west-2:216629550457:parameter/statistico-data-DB_PORT
+            - Name: DB_USER
+              ValueFrom: arn:aws:ssm:eu-west-2:216629550457:parameter/statistico-data-DB_USER
+            - Name: SENTRY_DSN
+              ValueFrom: arn:aws:ssm:eu-west-2:216629550457:parameter/statistico-data-SENTRY_DSN
+          Command:
+            - "./bin/migrate"
+          LogConfiguration:
+            LogDriver: 'awslogs'
+            Options:
+              awslogs-group: !Sub ${EnvironmentName}-service-${ServiceName}
+              awslogs-region: !Ref 'AWS::Region'
+              awslogs-stream-prefix: !Ref 'ServiceName'
         - Name: 'cron'
           Image: !Ref 'ImageUrl'
           Essential: true

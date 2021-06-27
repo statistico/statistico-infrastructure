@@ -11,7 +11,7 @@ Parameters:
     Description: A name for the service
   ImageUrl:
     Type: String
-    Default: 216629550457.dkr.ecr.eu-west-2.amazonaws.com/statistico-odds-warehouse:156a8216571801dbbebe32138f2270ee7b9dda02
+    Default: 216629550457.dkr.ecr.eu-west-2.amazonaws.com/statistico-odds-warehouse:4c4a667d28cc352058a6ec5f4038536589d1b343
     Description: The url of a docker image that contains the application process that
       will handle the traffic for this service
   ContainerPort:
@@ -113,8 +113,8 @@ Resources:
       Name: !Ref ServiceName
       DnsConfig:
         DnsRecords:
-          - Type: SRV
-            TTL: 60
+          - Type: 'A'
+            TTL: '300'
         NamespaceId:
           Fn::ImportValue: !Sub ${EnvironmentName}:ServiceDiscoveryNamespace
       HealthCheckCustomConfig:
@@ -146,7 +146,6 @@ Resources:
       TaskDefinition: !Ref 'TaskDefinition'
       ServiceRegistries:
         - RegistryArn: !GetAtt ServiceDiscoveryService.Arn
-          Port: 50051
 
   # Rule which allows the containers to talk to other containers in the same group.
   # This is what allows a container to use service discovery to get the IP and talk
@@ -170,3 +169,14 @@ Resources:
       ScalableDimension: ecs:service:DesiredCount
       ServiceNamespace: ecs
       RoleARN: !GetAtt AutoScalingRole.Arn
+
+  ScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: statistico-odds-warehouse-grpc-auto-scaling-policy
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref AutoScalingTarget
+      TargetTrackingScalingPolicyConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+        TargetValue: !Ref 'AutoScalingTargetValue'
