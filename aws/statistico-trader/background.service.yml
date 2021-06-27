@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Deploy a service into an ECS cluster with service discovery endpoint
+Description: Deploy an ECS service
 Parameters:
   EnvironmentName:
     Type: String
@@ -7,26 +7,13 @@ Parameters:
     Description: The name of the environment to add this service to
   ServiceName:
     Type: String
-    Default: statistico-trader-grpc
+    Default: statistico-trader-background
     Description: A name for the service
-  GrpcImageUrl:
+  ImageUrl:
     Type: String
-    Default: 216629550457.dkr.ecr.eu-west-2.amazonaws.com/statistico-trader:b61f77d8c02d6bd563054282cdf6a524eaf464bf
+    Default: 216629550457.dkr.ecr.eu-west-2.amazonaws.com/statistico-trader:5bfb0eed83ef5cb155a25de273a26ecbfc9168ee
     Description: The url of a docker image that contains the application process that
       will handle the traffic for this service
-  ProxyImageUrl:
-    Type: String
-    Default: 216629550457.dkr.ecr.eu-west-2.amazonaws.com/statistico-trader-envoy-proxy:b61f77d8c02d6bd563054282cdf6a524eaf464bf
-    Description: The url of a docker image that contains the application process that
-      will handle the traffic for this service
-  GrpcContainerPort:
-    Type: Number
-    Default: 50051
-    Description: What port number the application inside the docker container is binding to
-  ProxyContainerPort:
-    Type: Number
-    Default: 8080
-    Description: What port number the application inside the docker container is binding to
   ContainerCpu:
     Type: Number
     Default: 256
@@ -42,15 +29,11 @@ Parameters:
   MaxContainers:
     Type: Number
     Default: 3
-    Description: Maximum number ofcopies of the service task to run
+    Description: Maximum number of copies of the service task to run
   AutoScalingTargetValue:
     Type: Number
     Default: 50
     Description: "Target CPU utilization (%) for ECS services auto scaling"
-  Domain:
-    Type: String
-    Default: statistico.internal
-    Description: The name of the namespace. Services are prepended, for example user.service.production
 
 Resources:
   # A log group for storing the stdout logs from this service's containers
@@ -71,8 +54,6 @@ Resources:
       ManagedPolicyArns:
         - 'arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceAutoscaleRole'
 
-  # The task definition. This is a simple metadata description of what
-  # container to run, and what resource requirements it has.
   TaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
@@ -84,31 +65,44 @@ Resources:
         - FARGATE
       ExecutionRoleArn: arn:aws:iam::216629550457:role/ecsTaskExecutionRole
       ContainerDefinitions:
-        - Name: 'envoy-proxy'
-          Image: !Ref 'ProxyImageUrl'
-          Essential: true
-          PortMappings:
-            - ContainerPort: !Ref 'ProxyContainerPort'
-              Protocol: tcp
-            - ContainerPort: '9901'
-              Protocol: tcp
+        - Name: 'migrate'
+          Image: !Ref 'ImageUrl'
+          Essential: false
+          Secrets:
+            - Name: DB_DRIVER
+              ValueFrom: arn:aws:ssm:eu-west-2:216629550457:parameter/statistico-trader-DB_DRIVER
+            - Name: DB_HOST
+              ValueFrom: arn:aws:ssm:eu-west-2:216629550457:parameter/statistico-trader-DB_HOST
+            - Name: DB_NAME
+              ValueFrom: arn:aws:ssm:eu-west-2:216629550457:parameter/statistico-trader-DB_NAME
+            - Name: DB_PASSWORD
+              ValueFrom: arn:aws:ssm:eu-west-2:216629550457:parameter/statistico-trader-DB_PASSWORD
+            - Name: DB_PORT
+              ValueFrom: arn:aws:ssm:eu-west-2:216629550457:parameter/statistico-trader-DB_PORT
+            - Name: DB_USER
+              ValueFrom: arn:aws:ssm:eu-west-2:216629550457:parameter/statistico-trader-DB_USER
+            - Name: SENTRY_DSN
+              ValueFrom: arn:aws:ssm:eu-west-2:216629550457:parameter/statistico-trader-SENTRY_DSN
           Environment:
-            - Name: STATISTICO_TRADER_HOST
-              Value: statistico-trader-grpc.statistico.internal
-            - Name: STATISTICO_TRADER_PORT
+            - Name: STATISTICO_DATA_SERVICE_HOST
+              Value: statistico-data-grpc.statistico.internal
+            - Name: STATISTICO_DATA_SERVICE_PORT
               Value: 50051
+            - Name: STATISTICO_ODDS_WAREHOUSE_SERVICE_HOST
+              Value: statistico-odds-warehouse-grpc.statistico.internal
+            - Name: STATISTICO_ODDS_WAREHOUSE_SERVICE_PORT
+              Value: 50051
+          Command:
+            - "./bin/migrate"
           LogConfiguration:
             LogDriver: 'awslogs'
             Options:
               awslogs-group: !Sub ${EnvironmentName}-service-${ServiceName}
               awslogs-region: !Ref 'AWS::Region'
               awslogs-stream-prefix: !Ref 'ServiceName'
-        - Name: 'grpc'
-          Image: !Ref 'GrpcImageUrl'
+        - Name: 'queue'
+          Image: !Ref 'ImageUrl'
           Essential: true
-          PortMappings:
-            - ContainerPort: !Ref 'GrpcContainerPort'
-              Protocol: tcp
           Secrets:
             - Name: AWS_KEY
               ValueFrom: arn:aws:ssm:eu-west-2:216629550457:parameter/statistico-trader-AWS_KEY
@@ -156,8 +150,7 @@ Resources:
             - Name: STATISTICO_ODDS_WAREHOUSE_SERVICE_PORT
               Value: 50051
           Command:
-            - "./grpc"
-            - "--port 50051"
+            - "./queue"
           LogConfiguration:
             LogDriver: 'awslogs'
             Options:
@@ -165,26 +158,8 @@ Resources:
               awslogs-region: !Ref 'AWS::Region'
               awslogs-stream-prefix: !Ref 'ServiceName'
 
-  # Create a service discovery service in the private service namespace.
-  ServiceDiscoveryService:
-    Type: AWS::ServiceDiscovery::Service
-    Properties:
-      Name: !Ref ServiceName
-      DnsConfig:
-        DnsRecords:
-          - Type: 'A'
-            TTL: '300'
-        NamespaceId:
-          Fn::ImportValue: !Sub ${EnvironmentName}:ServiceDiscoveryNamespace
-      HealthCheckCustomConfig:
-        FailureThreshold: 1
-
-  # The service. The service is a resource which allows you to run multiple
-  # copies of a type of task, and gather up their logs and metrics, as well
-  # as monitor the number of running tasks and replace any that have crashed
   Service:
     Type: AWS::ECS::Service
-    DependsOn: ServiceDiscoveryService
     Properties:
       ServiceName: !Ref 'ServiceName'
       Cluster:
@@ -203,26 +178,6 @@ Resources:
             - Fn::ImportValue: !Sub ${EnvironmentName}:PublicSubnetOne
             - Fn::ImportValue: !Sub ${EnvironmentName}:PublicSubnetTwo
       TaskDefinition: !Ref 'TaskDefinition'
-      ServiceRegistries:
-        - RegistryArn: !GetAtt ServiceDiscoveryService.Arn
-      LoadBalancers:
-        - TargetGroupArn:
-            Fn::ImportValue: !Sub ${EnvironmentName}:TraderTargetGroup
-          ContainerPort: '8080'
-          ContainerName: 'envoy-proxy'
-
-  # Rule which allows the containers to talk to other containers in the same group.
-  # This is what allows a container to use service discovery to get the IP and talk
-  # to another container in the same group.
-  EcsSecurityGroupIngressFromSelf:
-    Type: AWS::EC2::SecurityGroupIngress
-    Properties:
-      Description: Ingress from other containers in the cluster
-      GroupId:
-        Fn::ImportValue: !Sub ${EnvironmentName}:ContainerSecurityGroup
-      IpProtocol: -1
-      SourceSecurityGroupId:
-        Fn::ImportValue: !Sub ${EnvironmentName}:ContainerSecurityGroup
 
   AutoScalingTarget:
     Type: AWS::ApplicationAutoScaling::ScalableTarget
@@ -237,7 +192,7 @@ Resources:
   ScalingPolicy:
     Type: AWS::ApplicationAutoScaling::ScalingPolicy
     Properties:
-      PolicyName: statistico-trader-grpc-auto-scaling-policy
+      PolicyName: statistico-trader-background-auto-scaling-policy
       PolicyType: TargetTrackingScaling
       ScalingTargetId: !Ref AutoScalingTarget
       TargetTrackingScalingPolicyConfiguration:
